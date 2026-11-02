@@ -63,6 +63,12 @@ a{color:inherit}
 .url::placeholder{color:var(--ink-3)}
 .src-tools{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .src-hint{margin:0;font-size:12.5px;color:var(--ink-3);max-width:110ch}
+.api-box{border:1px solid var(--rule);border-radius:9px;padding:8px 12px;font-size:13px}
+.api-box summary{cursor:pointer;font-weight:600}
+.api-box .api-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.api-box .url{flex:1 1 260px;font-size:13.5px;padding:8px 10px;border-width:1px}
+.api-box select{font:13px var(--f-body);padding:8px;border:1px solid var(--rule);border-radius:8px;background:var(--paper);color:var(--ink)}
+.api-box p{margin:8px 0 0;color:var(--ink-3);font-size:12px}
 .source.drop{outline:2px dashed var(--ink);outline-offset:-6px;background:var(--paper)}
 .file-chip{display:inline-flex;align-items:center;gap:6px;max-width:260px;font-size:12.5px;padding:6px 10px;border-radius:8px;border:1px solid var(--ink);background:var(--paper)}
 .file-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -298,6 +304,21 @@ textarea::placeholder{color:var(--ink-3)}
 <a class="btn ghost" id="openClaude" href="https://claude.ai/artifact/1fzyzAMM5GJ5vSyUcrJcHr" target="_blank" rel="noopener" hidden style="text-decoration:none">Claude에서 열기</a>
     </div>
     <div id="pasteBox" hidden><textarea id="article" placeholder="링크를 열 수 없는 글은 제목과 본문을 여기에 붙여 넣으세요. 링크와 함께 넣으면 링크는 출처로 표시됩니다." aria-label="글 본문"></textarea></div>
+    <details class="api-box" id="apiBox" hidden>
+      <summary id="apiSummary">Claude API 키 설정</summary>
+      <div class="api-row">
+        <input class="url" id="apiKey" type="password" placeholder="sk-ant-… API 키 붙여넣기" aria-label="Anthropic API 키" autocomplete="off" spellcheck="false">
+        <button class="btn ghost" id="apiFileBtn" type="button">설정 파일에서 불러오기</button>
+        <input id="apiFile" type="file" accept=".env,.json,.txt,.cfg,.ini,.toml,text/plain,application/json" hidden>
+      </div>
+      <div class="api-row">
+        <label>모델 <select id="apiModel" aria-label="Claude 모델"></select></label>
+        <label><input type="checkbox" id="apiRemember"> 이 브라우저에 기억</label>
+        <button class="btn ghost" id="apiSave" type="button">적용</button>
+        <button class="btn ghost" id="apiClear" type="button">키 지우기</button>
+      </div>
+      <p id="apiNote">키는 이 브라우저에만 두고 Anthropic API(api.anthropic.com)로만 보냅니다. 설정 파일은 브라우저가 경로로 직접 열 수 없어 파일 선택 창으로 고릅니다. <code>ANTHROPIC_API_KEY=…</code> 줄이 있는 .env, <code>{"ANTHROPIC_API_KEY": "…"}</code> 형태의 JSON, 또는 키 한 줄짜리 파일을 읽습니다. ‘기억’을 끄면 탭을 닫을 때 지워집니다.</p>
+    </details>
     <p class="src-hint" id="srcHint"></p>
     <p class="status" id="status" role="status" aria-live="polite"></p>
     <div class="history" id="history" aria-label="최근 분석"></div>
@@ -1064,6 +1085,7 @@ const $ = s => document.querySelector(s);
 /* claude.ai 밖(app.jehyunlee.dev 등)에서는 window.claude가 없다. 링크는 r.jina.ai 리더로 읽는다. */
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
 if (STANDALONE) $('#openClaude').hidden = false;
+let apiModel = null; /* loadApiModel()로 아래에서 채운다 */
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 const SI = {}; STAGES.forEach((s,i) => SI[s.id] = i);
@@ -1904,6 +1926,71 @@ const READER_ERR = {
   reader_network:'링크를 읽는 서비스에 연결하지 못했습니다. 본문을 붙여 넣어 주세요.',
   reader_failed:'링크를 읽지 못했습니다. 차단된 사이트이거나 로그인이 필요할 수 있습니다. 본문을 붙여 넣어 주세요.'
 };
+/* claude.ai 밖에서는 사용자가 넣은 Anthropic API 키로 Claude 분석을 돌린다. sample.json()과 같은 모양. */
+const API_KEY_STORE = 'dataartifact.apiKey', API_MODEL_STORE = 'dataartifact.apiModel';
+const API_DEFAULT_MODEL = 'claude-sonnet-5-5';
+function apiHeaders(key){ return { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true', 'content-type': 'application/json' }; }
+function parseKeyFile(text){
+  const t = String(text || '').trim();
+  try {
+    const j = JSON.parse(t);
+    const k = j && (j.ANTHROPIC_API_KEY || j.anthropic_api_key || j.apiKey || j.api_key || (j.anthropic && (j.anthropic.apiKey || j.anthropic.api_key)));
+    if (typeof k === 'string' && k.trim()) return k.trim();
+  } catch (e) {}
+  const m = t.match(/ANTHROPIC_API_KEY\s*[=:]\s*["']?([^"'\s#]+)/);
+  if (m) return m[1];
+  const raw = t.match(/sk-ant-[A-Za-z0-9_-]{20,}/);
+  return raw ? raw[0] : '';
+}
+function extractJson(text){
+  const t = String(text || '').replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a < 0 || b <= a) throw { code: 'invalid_json' };
+  try { return JSON.parse(t.slice(a, b + 1)); } catch (e) { throw { code: 'invalid_json' }; }
+}
+function makeApiSample(key, model){
+  return {
+    async json(prompt, opts){
+      let r;
+      try {
+        r = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST', headers: apiHeaders(key), signal: opts && opts.signal,
+          body: JSON.stringify({ model, max_tokens: 16000, messages: [{ role: 'user', content: prompt }] })
+        });
+      } catch (e) { throw { code: e && e.name === 'AbortError' ? 'cancelled' : 'api_network' }; }
+      let body = null;
+      try { body = await r.json(); } catch (e) {}
+      if (!r.ok) {
+        const msg = (body && body.error && body.error.message) || '';
+        if (r.status === 401) throw { code: 'invalid_key' };
+        if (r.status === 403) throw { code: 'key_forbidden' };
+        if (r.status === 404) throw { code: 'model_not_found' };
+        if (r.status === 429 || r.status === 529) throw { code: 'rate_limited' };
+        if (r.status === 413 || /too long|too large/i.test(msg)) throw { code: 'prompt_too_large' };
+        if (/credit balance/i.test(msg)) throw { code: 'no_credit' };
+        throw { code: 'api_error' };
+      }
+      if (body && body.stop_reason === 'refusal') throw { code: 'refused' };
+      const text = ((body && body.content) || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      return extractJson(text);
+    }
+  };
+}
+function loadApiKey(){ try { return sessionStorage.getItem(API_KEY_STORE) || localStorage.getItem(API_KEY_STORE) || ''; } catch (e) { return ''; } }
+function loadApiModel(){ try { return localStorage.getItem(API_MODEL_STORE) || API_DEFAULT_MODEL; } catch (e) { return API_DEFAULT_MODEL; } }
+function storeApiKey(key, remember){
+  try {
+    sessionStorage.removeItem(API_KEY_STORE); localStorage.removeItem(API_KEY_STORE);
+    if (key) (remember ? localStorage : sessionStorage).setItem(API_KEY_STORE, key);
+  } catch (e) {}
+}
+async function listApiModels(key){
+  const r = await fetch('https://api.anthropic.com/v1/models?limit=100', { headers: apiHeaders(key) });
+  if (r.status === 401) throw { code: 'invalid_key' };
+  if (!r.ok) throw { code: 'api_error' };
+  const j = await r.json();
+  return (j.data || []).map(m => ({ id: m.id, name: m.display_name || m.id }));
+}
 function updateHint(){
   const hint = $('#srcHint');
   let base;
@@ -1913,7 +2000,7 @@ function updateHint(){
   else if (isOwner === false) base = '<b>링크 읽기</b> 공유받은 페이지는 링크 본문을 직접 읽을 수 없습니다. 링크는 출처로 넣고, 파일을 올리거나 본문을 붙여 넣은 뒤 ‘분석’을 누르세요. 결과는 이 브라우저의 ‘최근 분석’에 남습니다.';
   else base = '<b>링크 읽기</b> 링크 본문을 직접 읽지 못하는 화면에서는 파일을 올리거나 본문을 붙여 넣고 ‘분석’을 누르세요.';
   base += ' <b>파일</b> PDF·DOCX·HWPX·TXT·HTML을 올리거나 이 칸에 끌어다 놓으세요. 파일 자체는 어디에도 올라가지 않고, 이 브라우저에서 뽑은 글자만 분석에 씁니다.';
-  const claudeLine = STANDALONE ? ' <b>Claude 분석</b> 문맥까지 읽는 분석은 ‘Claude에서 열기’로 claude.ai에서 열면 로그인한 계정으로 쓸 수 있습니다. 여기서는 키워드 대조로 분석합니다.'
+  const claudeLine = STANDALONE ? (sample ? ' <b>Claude 분석</b> 입력한 API 키로 돌아갑니다(모델 ' + esc(apiModel) + '). 사용량은 그 키의 계정에 청구됩니다.' : ' <b>Claude 분석</b> 문맥까지 읽는 분석은 아래 ‘Claude API 키 설정’에 키를 넣거나, ‘Claude에서 열기’로 claude.ai에서 쓸 수 있습니다. 지금은 키워드 대조로 분석합니다.')
     : sample ? ' <b>Claude 분석</b> 지금 로그인한 Claude 계정으로 돌아갑니다. 처음 한 번 허용을 묻고, 그 계정의 사용량을 씁니다.'
     : sampleChecked ? ' <b>Claude 분석</b> Claude에 로그인한 상태에서 열어야 쓸 수 있습니다. 지금은 키워드 대조로만 분석합니다.' : '';
   hint.innerHTML = base + claudeLine;
@@ -1928,6 +2015,63 @@ updateHint();
   try { if (window.claude && typeof window.claude.use === 'function') sample = await window.claude.use('sample'); } catch (e) { sample = null; }
   sampleChecked = true; updateHint();
 })();
+apiModel = loadApiModel();
+if (STANDALONE) {
+  const box = $('#apiBox'), keyEl = $('#apiKey'), modelEl = $('#apiModel'), rememberEl = $('#apiRemember'), summaryEl = $('#apiSummary');
+  box.hidden = false;
+  const setModelOptions = (models) => {
+    const ids = models.length ? models : [{ id: apiModel, name: apiModel }];
+    if (!ids.some(m => m.id === apiModel)) apiModel = (ids.find(m => /sonnet/.test(m.id)) || ids[0]).id;
+    modelEl.innerHTML = ids.map(m => `<option value="${esc(m.id)}"${m.id === apiModel ? ' selected' : ''}>${esc(m.name)}</option>`).join('');
+  };
+  const activate = (key) => {
+    sample = key ? makeApiSample(key, apiModel) : null;
+    summaryEl.textContent = key ? 'Claude API 키 설정 · 사용 중' : 'Claude API 키 설정';
+    updateHint();
+  };
+  const apply = async (key) => {
+    key = (key || '').trim();
+    if (!key) { setStatus('API 키를 넣어 주세요.', 'warn'); return; }
+    if (!/^sk-ant-/.test(key)) { setStatus('Anthropic API 키는 보통 sk-ant-로 시작합니다. 키를 확인하세요.', 'warn'); return; }
+    setStatus('API 키를 확인하는 중입니다…', 'busy');
+    try { setModelOptions(await listApiModels(key)); }
+    catch (err) { setStatus(err && err.code === 'invalid_key' ? 'API 키가 올바르지 않습니다.' : 'API 키를 확인하지 못했습니다. 키가 올바른지, 인터넷에 연결돼 있는지 확인하세요.', 'warn'); return; }
+    keyEl.value = key;
+    storeApiKey(key, rememberEl.checked);
+    try { localStorage.setItem(API_MODEL_STORE, apiModel); } catch (e) {}
+    activate(key);
+    setStatus('API 키를 적용했습니다. 이제 ‘분석’을 누르면 Claude가 문맥까지 읽어 분석합니다.');
+  };
+  const saved = loadApiKey();
+  setModelOptions([]);
+  if (saved) {
+    keyEl.value = saved;
+    try { rememberEl.checked = !!localStorage.getItem(API_KEY_STORE); } catch (e) {}
+    activate(saved);
+    listApiModels(saved).then(setModelOptions).catch(() => {});
+  }
+  $('#apiSave').addEventListener('click', () => apply(keyEl.value));
+  keyEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); apply(keyEl.value); } });
+  modelEl.addEventListener('change', () => {
+    apiModel = modelEl.value;
+    try { localStorage.setItem(API_MODEL_STORE, apiModel); } catch (e) {}
+    if (sample) activate(loadApiKey() || keyEl.value.trim());
+  });
+  rememberEl.addEventListener('change', () => { const k = loadApiKey(); if (k) storeApiKey(k, rememberEl.checked); });
+  $('#apiFileBtn').addEventListener('click', () => $('#apiFile').click());
+  $('#apiFile').addEventListener('change', async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    if (f.size > 256 * 1024) { setStatus('설정 파일이 너무 큽니다.', 'warn'); return; }
+    const key = parseKeyFile(await f.text());
+    if (!key) { setStatus(`‘${f.name}’에서 ANTHROPIC_API_KEY를 찾지 못했습니다.`, 'warn'); return; }
+    apply(key);
+  });
+  $('#apiClear').addEventListener('click', () => {
+    storeApiKey('', false); keyEl.value = ''; activate('');
+    setStatus('API 키를 지웠습니다. 키워드 대조로 분석합니다.');
+  });
+}
 function textOf(res){
   if (!res) return '';
   if (typeof res.payload === 'string') return res.payload;
@@ -2000,7 +2144,13 @@ const SAMPLE_ERR = {
   empty_completion:'Claude가 효과를 고르지 못했습니다. 본문을 더 넣어 다시 시도하세요.',
   refused:'Claude가 이 글의 분석을 거절했습니다. 키워드 대조 결과를 표시합니다.',
   prompt_too_large:'글이 너무 깁니다. 앞부분만 넣어 다시 시도하세요.',
-  cancelled:'Claude 분석을 멈췄습니다. 키워드 대조 결과를 그대로 둡니다.'
+  cancelled:'Claude 분석을 멈췄습니다. 키워드 대조 결과를 그대로 둡니다.',
+  invalid_key:'API 키가 올바르지 않습니다. ‘Claude API 키 설정’에서 키를 확인하세요. 지금은 키워드 대조 결과를 표시합니다.',
+  key_forbidden:'이 API 키로는 요청이 허용되지 않습니다. 키 권한을 확인하세요. 지금은 키워드 대조 결과를 표시합니다.',
+  model_not_found:'선택한 모델을 쓸 수 없습니다. ‘Claude API 키 설정’에서 다른 모델을 고르세요. 지금은 키워드 대조 결과를 표시합니다.',
+  no_credit:'API 크레딧이 부족합니다. Anthropic 콘솔에서 잔액을 확인하세요. 지금은 키워드 대조 결과를 표시합니다.',
+  api_network:'Anthropic API 요청이 거부됐거나 연결하지 못했습니다. API 키가 아직 유효한지 확인하세요. 지금은 키워드 대조 결과를 표시합니다.',
+  api_error:'Anthropic API가 오류를 돌려줬습니다. 잠시 뒤 다시 시도하세요. 지금은 키워드 대조 결과를 표시합니다.'
 };
 const SAMPLE_HIDE = ['not_granted','sampling_disabled','not_declared','capability_disabled','capability_removed'];
 const goBtn = $('#go');
@@ -2042,7 +2192,7 @@ $('#srcForm').addEventListener('submit', async e => {
   if (!sample) {
     const id = await saveReport(local);
     if (id) { currentDocId = id; renderAnswer(); renderHistory(); }
-    setStatus(`키워드 대조로 다루는 오류 ${local.covers.length}개, 범할 수 있는 오류 ${local.commits.length}개를 찾았습니다.${savedNote(id)}${STANDALONE ? ' 문맥까지 읽는 Claude 분석은 ‘Claude에서 열기’로 claude.ai에서 쓸 수 있습니다.' : sampleChecked ? ' 문맥까지 읽는 Claude 분석은 Claude에 로그인한 상태에서 쓸 수 있습니다.' : ''}`);
+    setStatus(`키워드 대조로 다루는 오류 ${local.covers.length}개, 범할 수 있는 오류 ${local.commits.length}개를 찾았습니다.${savedNote(id)}${STANDALONE ? ' 문맥까지 읽는 Claude 분석은 API 키를 넣거나 ‘Claude에서 열기’로 쓸 수 있습니다.' : sampleChecked ? ' 문맥까지 읽는 Claude 분석은 Claude에 로그인한 상태에서 쓸 수 있습니다.' : ''}`);
     return;
   }
   ctl = new AbortController(); setBusy(true);
