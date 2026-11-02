@@ -1922,7 +1922,11 @@ const READER_ERR = {
   reader_rate_limited:'링크 읽기 요청이 잠시 너무 많습니다. 1분쯤 뒤 다시 누르거나, 본문을 붙여 넣어 주세요.',
   reader_timeout:'링크를 읽는 데 너무 오래 걸립니다. 본문을 붙여 넣어 주세요.',
   reader_network:'링크를 읽는 서비스에 연결하지 못했습니다. 본문을 붙여 넣어 주세요.',
-  reader_failed:'링크를 읽지 못했습니다. 차단된 사이트이거나 로그인이 필요할 수 있습니다. 본문을 붙여 넣어 주세요.'
+  reader_failed:'링크를 읽지 못했습니다. 차단된 사이트이거나 로그인이 필요할 수 있습니다. 본문을 붙여 넣어 주세요.',
+  fetch_failed:'Claude가 링크를 열지 못했습니다. 차단된 사이트이거나 로그인이 필요할 수 있습니다. 본문을 붙여 넣어 주세요.',
+  fetch_unsupported:'Claude가 이 링크의 형식(PDF 등)을 본문으로 가져오지 못했습니다. 파일로 내려받아 ‘파일 올리기’로 넣어 주세요.',
+  fetch_rate_limited:'링크를 여는 요청이 잠시 너무 많습니다. 잠시 뒤 다시 누르거나, 본문을 붙여 넣어 주세요.',
+  fetch_disabled:'이 API 키의 조직에서 웹 가져오기(web fetch)가 꺼져 있어 링크를 열 수 없습니다. 본문을 붙여 넣어 주세요.'
 };
 /* claude.ai 밖에서는 사용자가 넣은 Anthropic API 키로 Claude 분석을 돌린다. sample.json()과 같은 모양. */
 const API_KEY_STORE = 'dataartifact.apiKey', API_MODEL_STORE = 'dataartifact.apiModel';
@@ -1946,31 +1950,50 @@ function extractJson(text){
   if (a < 0 || b <= a) throw { code: 'invalid_json' };
   try { return JSON.parse(t.slice(a, b + 1)); } catch (e) { throw { code: 'invalid_json' }; }
 }
+async function apiMessages(key, payload, signal){
+  let r;
+  try {
+    r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: apiHeaders(key), signal, body: JSON.stringify(payload) });
+  } catch (e) { throw { code: e && e.name === 'AbortError' ? 'cancelled' : 'api_network' }; }
+  let body = null;
+  try { body = await r.json(); } catch (e) {}
+  if (!r.ok) {
+    const msg = (body && body.error && body.error.message) || '';
+    if (r.status === 401) throw { code: 'invalid_key' };
+    if (r.status === 403) throw { code: 'key_forbidden' };
+    if (r.status === 404) throw { code: 'model_not_found' };
+    if (r.status === 429 || r.status === 529) throw { code: 'rate_limited' };
+    if (r.status === 413 || /too long|too large/i.test(msg)) throw { code: 'prompt_too_large' };
+    if (/credit balance/i.test(msg)) throw { code: 'no_credit' };
+    if (/web.?fetch/i.test(msg)) throw { code: 'fetch_disabled' };
+    throw { code: 'api_error' };
+  }
+  if (body && body.stop_reason === 'refusal') throw { code: 'refused' };
+  return body || {};
+}
 function makeApiSample(key, model){
   return {
     async json(prompt, opts){
-      let r;
-      try {
-        r = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST', headers: apiHeaders(key), signal: opts && opts.signal,
-          body: JSON.stringify({ model, max_tokens: 16000, messages: [{ role: 'user', content: prompt }] })
-        });
-      } catch (e) { throw { code: e && e.name === 'AbortError' ? 'cancelled' : 'api_network' }; }
-      let body = null;
-      try { body = await r.json(); } catch (e) {}
-      if (!r.ok) {
-        const msg = (body && body.error && body.error.message) || '';
-        if (r.status === 401) throw { code: 'invalid_key' };
-        if (r.status === 403) throw { code: 'key_forbidden' };
-        if (r.status === 404) throw { code: 'model_not_found' };
-        if (r.status === 429 || r.status === 529) throw { code: 'rate_limited' };
-        if (r.status === 413 || /too long|too large/i.test(msg)) throw { code: 'prompt_too_large' };
-        if (/credit balance/i.test(msg)) throw { code: 'no_credit' };
-        throw { code: 'api_error' };
-      }
-      if (body && body.stop_reason === 'refusal') throw { code: 'refused' };
-      const text = ((body && body.content) || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      const body = await apiMessages(key, { model, max_tokens: 16000, messages: [{ role: 'user', content: prompt }] }, opts && opts.signal);
+      const text = (body.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
       return extractJson(text);
+    },
+    /* Anthropic API의 web_fetch 서버 도구로 링크 본문을 가져온다. 모델 답이 아니라 도구 결과의 원문을 쓴다. */
+    async fetchUrl(url, opts){
+      const body = await apiMessages(key, {
+        model, max_tokens: 1024,
+        tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 1, max_content_tokens: 30000 }],
+        messages: [{ role: 'user', content: 'web_fetch 도구로 다음 주소를 한 번만 가져오세요. 가져온 뒤에는 "완료"라고만 답하세요.\n' + url }]
+      }, opts && opts.signal);
+      const res = (body.content || []).find(b => b.type === 'web_fetch_tool_result');
+      const c = res && res.content;
+      if (!c) throw { code: 'fetch_failed' };
+      if (c.type === 'web_fetch_tool_error') throw { code: c.error_code === 'too_many_requests' ? 'fetch_rate_limited' : c.error_code === 'unsupported_content_type' ? 'fetch_unsupported' : 'fetch_failed' };
+      const src = c.content && c.content.source;
+      if (!src) throw { code: 'fetch_failed' };
+      if (src.type !== 'text') throw { code: 'fetch_unsupported' };
+      const title = c.content.title ? c.content.title + '\n\n' : '';
+      return title + (src.data || '');
     }
   };
 }
@@ -1992,7 +2015,8 @@ async function listApiModels(key){
 function updateHint(){
   const hint = $('#srcHint');
   let base;
-  if (STANDALONE) base = '<b>링크 읽기</b> 링크를 넣고 ‘분석’을 누르면 본문을 읽어 옵니다. 링크 주소는 본문을 가져오는 리더 서비스(r.jina.ai)를 거칩니다. 로그인이나 유료 구독이 필요한 글은 본문을 붙여 넣으세요.';
+  if (STANDALONE) base = sample ? '<b>링크 읽기</b> 링크를 넣고 ‘분석’을 누르면 Claude가 웹 가져오기(web fetch)로 본문을 가져옵니다. 로그인이나 유료 구독이 필요한 글은 본문을 붙여 넣으세요.'
+    : '<b>링크 읽기</b> 링크를 넣고 ‘분석’을 누르면 본문을 읽어 옵니다. API 키가 없을 때는 링크 주소가 외부 리더 서비스(r.jina.ai)를 거칩니다. 로그인이나 유료 구독이 필요한 글은 본문을 붙여 넣으세요.';
   else if (browserListed) base = '<b>링크 읽기</b> Claude 데스크톱 앱의 내장 브라우저로 링크를 열어 본문을 읽습니다. 처음 한 번 허용을 묻습니다. 로그인이나 유료 구독이 필요한 글은 본문을 붙여 넣으세요.';
   else if (isOwner) base = '<b>링크 읽기</b> 이 페이지가 링크 본문을 직접 읽는 것은 Claude 데스크톱 앱에서 열었을 때만 됩니다. 그 밖의 화면에서는 파일을 올리거나 본문을 붙여 넣거나, 링크를 Claude 대화에 보내 주세요. 대화에서 분석한 결과는 ‘최근 분석’에 들어옵니다.';
   else if (isOwner === false) base = '<b>링크 읽기</b> 공유받은 페이지는 링크 본문을 직접 읽을 수 없습니다. 링크는 출처로 넣고, 파일을 올리거나 본문을 붙여 넣은 뒤 ‘분석’을 누르세요. 결과는 이 브라우저의 ‘최근 분석’에 남습니다.';
@@ -2165,10 +2189,11 @@ $('#srcForm').addEventListener('submit', async e => {
   const usedFile = text.length >= 30 && currentFile ? currentFile : '';
   if (url && text.length < 30) {
     if (STANDALONE) {
-      setStatus('링크 본문을 읽어 오는 중입니다…', 'busy');
+      const viaClaude = !!(sample && sample.fetchUrl);
+      setStatus(viaClaude ? 'Claude가 링크 본문을 가져오는 중입니다…' : '링크 본문을 읽어 오는 중입니다…', 'busy');
       goBtn.disabled = true;
-      try { text = (await fetchViaReader(url)).trim(); }
-      catch (err) { goBtn.disabled = false; openPaste(true); setStatus(READER_ERR[err && err.code] || READER_ERR.reader_failed, 'warn'); return; }
+      try { text = (viaClaude ? await sample.fetchUrl(url) : await fetchViaReader(url)).trim(); }
+      catch (err) { goBtn.disabled = false; openPaste(true); const code = err && err.code; setStatus(READER_ERR[code] || SAMPLE_ERR[code] || READER_ERR.reader_failed, 'warn'); return; }
       goBtn.disabled = false;
       if (text.length < 200) { openPaste(true); setStatus('링크에서 읽은 본문이 너무 짧습니다. 로그인이나 구독이 필요한 글일 수 있습니다. 본문을 붙여 넣어 주세요.', 'warn'); return; }
     } else if (!mcp || !browserListed) {
