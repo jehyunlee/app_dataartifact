@@ -301,7 +301,6 @@ textarea::placeholder{color:var(--ink-3)}
       <button class="btn ghost" id="togglePaste" type="button" aria-expanded="false" aria-controls="pasteBox">본문 직접 붙여넣기</button>
       <button class="btn ghost" id="sample" type="button">예시 보기</button>
       <button class="btn ghost" id="wipe" type="button">입력 지우기</button>
-<a class="btn ghost" id="openClaude" href="https://claude.ai/artifact/1fzyzAMM5GJ5vSyUcrJcHr" target="_blank" rel="noopener" hidden style="text-decoration:none">Claude에서 열기</a>
     </div>
     <div id="pasteBox" hidden><textarea id="article" placeholder="링크를 열 수 없는 글은 제목과 본문을 여기에 붙여 넣으세요. 링크와 함께 넣으면 링크는 출처로 표시됩니다." aria-label="글 본문"></textarea></div>
     <details class="api-box" id="apiBox" hidden>
@@ -1084,7 +1083,6 @@ const SAMPLE_REPORT = {
 const $ = s => document.querySelector(s);
 /* claude.ai 밖(app.jehyunlee.dev 등)에서는 window.claude가 없다. 링크는 r.jina.ai 리더로 읽는다. */
 const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
-if (STANDALONE) $('#openClaude').hidden = false;
 let apiModel = null; /* loadApiModel()로 아래에서 채운다 */
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2000,7 +1998,7 @@ function updateHint(){
   else if (isOwner === false) base = '<b>링크 읽기</b> 공유받은 페이지는 링크 본문을 직접 읽을 수 없습니다. 링크는 출처로 넣고, 파일을 올리거나 본문을 붙여 넣은 뒤 ‘분석’을 누르세요. 결과는 이 브라우저의 ‘최근 분석’에 남습니다.';
   else base = '<b>링크 읽기</b> 링크 본문을 직접 읽지 못하는 화면에서는 파일을 올리거나 본문을 붙여 넣고 ‘분석’을 누르세요.';
   base += ' <b>파일</b> PDF·DOCX·HWPX·TXT·HTML을 올리거나 이 칸에 끌어다 놓으세요. 파일 자체는 어디에도 올라가지 않고, 이 브라우저에서 뽑은 글자만 분석에 씁니다.';
-  const claudeLine = STANDALONE ? (sample ? ' <b>Claude 분석</b> 입력한 API 키로 돌아갑니다(모델 ' + esc(apiModel) + '). 사용량은 그 키의 계정에 청구됩니다.' : ' <b>Claude 분석</b> 문맥까지 읽는 분석은 아래 ‘Claude API 키 설정’에 키를 넣거나, ‘Claude에서 열기’로 claude.ai에서 쓸 수 있습니다. 지금은 키워드 대조로 분석합니다.')
+  const claudeLine = STANDALONE ? (sample ? ' <b>Claude 분석</b> 입력한 API 키로 돌아갑니다(모델 ' + esc(apiModel) + '). 사용량은 그 키의 계정에 청구됩니다.' : ' <b>Claude 분석</b> 문맥까지 읽는 분석은 아래 ‘Claude API 키 설정’에 키를 넣으면 쓸 수 있습니다. 지금은 키워드 대조로 분석합니다.')
     : sample ? ' <b>Claude 분석</b> 지금 로그인한 Claude 계정으로 돌아갑니다. 처음 한 번 허용을 묻고, 그 계정의 사용량을 씁니다.'
     : sampleChecked ? ' <b>Claude 분석</b> Claude에 로그인한 상태에서 열어야 쓸 수 있습니다. 지금은 키워드 대조로만 분석합니다.' : '';
   hint.innerHTML = base + claudeLine;
@@ -2192,7 +2190,7 @@ $('#srcForm').addEventListener('submit', async e => {
   if (!sample) {
     const id = await saveReport(local);
     if (id) { currentDocId = id; renderAnswer(); renderHistory(); }
-    setStatus(`키워드 대조로 다루는 오류 ${local.covers.length}개, 범할 수 있는 오류 ${local.commits.length}개를 찾았습니다.${savedNote(id)}${STANDALONE ? ' 문맥까지 읽는 Claude 분석은 API 키를 넣거나 ‘Claude에서 열기’로 쓸 수 있습니다.' : sampleChecked ? ' 문맥까지 읽는 Claude 분석은 Claude에 로그인한 상태에서 쓸 수 있습니다.' : ''}`);
+    setStatus(`키워드 대조로 다루는 오류 ${local.covers.length}개, 범할 수 있는 오류 ${local.commits.length}개를 찾았습니다.${savedNote(id)}${STANDALONE ? ' 문맥까지 읽는 Claude 분석은 ‘Claude API 키 설정’에 키를 넣으면 쓸 수 있습니다.' : sampleChecked ? ' 문맥까지 읽는 Claude 분석은 Claude에 로그인한 상태에서 쓸 수 있습니다.' : ''}`);
     return;
   }
   ctl = new AbortController(); setBusy(true);
