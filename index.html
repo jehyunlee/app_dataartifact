@@ -295,6 +295,7 @@ textarea::placeholder{color:var(--ink-3)}
       <button class="btn ghost" id="togglePaste" type="button" aria-expanded="false" aria-controls="pasteBox">본문 직접 붙여넣기</button>
       <button class="btn ghost" id="sample" type="button">예시 보기</button>
       <button class="btn ghost" id="wipe" type="button">입력 지우기</button>
+<a class="btn ghost" id="openClaude" href="https://claude.ai/artifact/1fzyzAMM5GJ5vSyUcrJcHr" target="_blank" rel="noopener" hidden style="text-decoration:none">Claude에서 열기</a>
     </div>
     <div id="pasteBox" hidden><textarea id="article" placeholder="링크를 열 수 없는 글은 제목과 본문을 여기에 붙여 넣으세요. 링크와 함께 넣으면 링크는 출처로 표시됩니다." aria-label="글 본문"></textarea></div>
     <p class="src-hint" id="srcHint"></p>
@@ -1060,6 +1061,9 @@ const SAMPLE_REPORT = {
 
 /* ───────── 준비 ───────── */
 const $ = s => document.querySelector(s);
+/* claude.ai 밖(app.jehyunlee.dev 등)에서는 window.claude가 없다. 링크는 r.jina.ai 리더로 읽는다. */
+const STANDALONE = !(window.claude && typeof window.claude.use === 'function');
+if (STANDALONE) $('#openClaude').hidden = false;
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 const SI = {}; STAGES.forEach((s,i) => SI[s.id] = i);
@@ -1879,15 +1883,38 @@ autoShowLatest();
 
 /* ───────── 링크 읽기 (Claude 데스크톱 앱의 내장 브라우저) ───────── */
 const BROWSER = 'host:claude_browser';
+async function fetchViaReader(url){
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 45000);
+  let r;
+  try { r = await fetch('https://r.jina.ai/' + url, { signal: c.signal, headers: { 'Accept': 'text/plain', 'X-Retain-Images': 'none' } }); }
+  catch (e) { throw { code: c.signal.aborted ? 'reader_timeout' : 'reader_network' }; }
+  finally { clearTimeout(t); }
+  if (r.status === 429) throw { code: 'reader_rate_limited' };
+  if (!r.ok) throw { code: 'reader_failed' };
+  const raw = await r.text();
+  const i = raw.indexOf('Markdown Content:');
+  const titleMatch = raw.match(/^Title:\s*(.+)$/m);
+  const body = i >= 0 ? raw.slice(i + 'Markdown Content:'.length) : raw;
+  return (titleMatch ? titleMatch[1].trim() + '\n\n' : '') + body;
+}
+const READER_ERR = {
+  reader_rate_limited:'링크 읽기 요청이 잠시 너무 많습니다. 1분쯤 뒤 다시 누르거나, 본문을 붙여 넣어 주세요.',
+  reader_timeout:'링크를 읽는 데 너무 오래 걸립니다. 본문을 붙여 넣어 주세요.',
+  reader_network:'링크를 읽는 서비스에 연결하지 못했습니다. 본문을 붙여 넣어 주세요.',
+  reader_failed:'링크를 읽지 못했습니다. 차단된 사이트이거나 로그인이 필요할 수 있습니다. 본문을 붙여 넣어 주세요.'
+};
 function updateHint(){
   const hint = $('#srcHint');
   let base;
-  if (browserListed) base = '<b>링크 읽기</b> Claude 데스크톱 앱의 내장 브라우저로 링크를 열어 본문을 읽습니다. 처음 한 번 허용을 묻습니다. 로그인이나 유료 구독이 필요한 글은 본문을 붙여 넣으세요.';
+  if (STANDALONE) base = '<b>링크 읽기</b> 링크를 넣고 ‘분석’을 누르면 본문을 읽어 옵니다. 링크 주소는 본문을 가져오는 리더 서비스(r.jina.ai)를 거칩니다. 로그인이나 유료 구독이 필요한 글은 본문을 붙여 넣으세요.';
+  else if (browserListed) base = '<b>링크 읽기</b> Claude 데스크톱 앱의 내장 브라우저로 링크를 열어 본문을 읽습니다. 처음 한 번 허용을 묻습니다. 로그인이나 유료 구독이 필요한 글은 본문을 붙여 넣으세요.';
   else if (isOwner) base = '<b>링크 읽기</b> 이 페이지가 링크 본문을 직접 읽는 것은 Claude 데스크톱 앱에서 열었을 때만 됩니다. 그 밖의 화면에서는 파일을 올리거나 본문을 붙여 넣거나, 링크를 Claude 대화에 보내 주세요. 대화에서 분석한 결과는 ‘최근 분석’에 들어옵니다.';
   else if (isOwner === false) base = '<b>링크 읽기</b> 공유받은 페이지는 링크 본문을 직접 읽을 수 없습니다. 링크는 출처로 넣고, 파일을 올리거나 본문을 붙여 넣은 뒤 ‘분석’을 누르세요. 결과는 이 브라우저의 ‘최근 분석’에 남습니다.';
   else base = '<b>링크 읽기</b> 링크 본문을 직접 읽지 못하는 화면에서는 파일을 올리거나 본문을 붙여 넣고 ‘분석’을 누르세요.';
   base += ' <b>파일</b> PDF·DOCX·HWPX·TXT·HTML을 올리거나 이 칸에 끌어다 놓으세요. 파일 자체는 어디에도 올라가지 않고, 이 브라우저에서 뽑은 글자만 분석에 씁니다.';
-  const claudeLine = sample ? ' <b>Claude 분석</b> 지금 로그인한 Claude 계정으로 돌아갑니다. 처음 한 번 허용을 묻고, 그 계정의 사용량을 씁니다.'
+  const claudeLine = STANDALONE ? ' <b>Claude 분석</b> 문맥까지 읽는 분석은 ‘Claude에서 열기’로 claude.ai에서 열면 로그인한 계정으로 쓸 수 있습니다. 여기서는 키워드 대조로 분석합니다.'
+    : sample ? ' <b>Claude 분석</b> 지금 로그인한 Claude 계정으로 돌아갑니다. 처음 한 번 허용을 묻고, 그 계정의 사용량을 씁니다.'
     : sampleChecked ? ' <b>Claude 분석</b> Claude에 로그인한 상태에서 열어야 쓸 수 있습니다. 지금은 키워드 대조로만 분석합니다.' : '';
   hint.innerHTML = base + claudeLine;
 }
@@ -1989,25 +2016,33 @@ $('#srcForm').addEventListener('submit', async e => {
   if (url && text === SAMPLE_TEXT.trim()) text = '';
   const usedFile = text.length >= 30 && currentFile ? currentFile : '';
   if (url && text.length < 30) {
-    if (!mcp || !browserListed) {
+    if (STANDALONE) {
+      setStatus('링크 본문을 읽어 오는 중입니다…', 'busy');
+      goBtn.disabled = true;
+      try { text = (await fetchViaReader(url)).trim(); }
+      catch (err) { goBtn.disabled = false; openPaste(true); setStatus(READER_ERR[err && err.code] || READER_ERR.reader_failed, 'warn'); return; }
+      goBtn.disabled = false;
+      if (text.length < 200) { openPaste(true); setStatus('링크에서 읽은 본문이 너무 짧습니다. 로그인이나 구독이 필요한 글일 수 있습니다. 본문을 붙여 넣어 주세요.', 'warn'); return; }
+    } else if (!mcp || !browserListed) {
       openPaste(true);
       setStatus(isOwner ? '이 화면에서는 링크 본문을 직접 열 수 없습니다. 본문을 아래 상자에 붙여 넣고 다시 ‘분석’을 누르거나, 링크를 Claude 대화에 보내 주세요.'
         : '공유받은 페이지에서는 링크 본문을 직접 열 수 없습니다. 본문을 아래 상자에 붙여 넣고 다시 ‘분석’을 누르세요. 링크는 출처로 함께 남습니다.', 'warn');
       textEl.focus(); return;
-    }
+    } else {
     setStatus('내장 브라우저로 링크를 여는 중입니다…', 'busy');
     goBtn.disabled = true;
     try { text = (await fetchViaBrowser(url)).trim(); }
     catch (err) { goBtn.disabled = false; openPaste(true); setStatus(BROWSER_ERR[err && err.code] || '링크를 열지 못했습니다. 본문을 붙여 넣어 주세요.', 'warn'); return; }
     goBtn.disabled = false;
     if (text.length < 200) { openPaste(true); setStatus('링크에서 읽은 본문이 너무 짧습니다. 로그인이나 구독이 필요한 글일 수 있습니다. 본문을 붙여 넣어 주세요.', 'warn'); return; }
+    }
   }
   const local = buildLocal(text, url, usedFile);
   showReport(local);
   if (!sample) {
     const id = await saveReport(local);
     if (id) { currentDocId = id; renderAnswer(); renderHistory(); }
-    setStatus(`키워드 대조로 다루는 오류 ${local.covers.length}개, 범할 수 있는 오류 ${local.commits.length}개를 찾았습니다.${savedNote(id)}${sampleChecked ? ' 문맥까지 읽는 Claude 분석은 Claude에 로그인한 상태에서 쓸 수 있습니다.' : ''}`);
+    setStatus(`키워드 대조로 다루는 오류 ${local.covers.length}개, 범할 수 있는 오류 ${local.commits.length}개를 찾았습니다.${savedNote(id)}${STANDALONE ? ' 문맥까지 읽는 Claude 분석은 ‘Claude에서 열기’로 claude.ai에서 쓸 수 있습니다.' : sampleChecked ? ' 문맥까지 읽는 Claude 분석은 Claude에 로그인한 상태에서 쓸 수 있습니다.' : ''}`);
     return;
   }
   ctl = new AbortController(); setBusy(true);
