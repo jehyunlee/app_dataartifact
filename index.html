@@ -252,6 +252,16 @@ textarea::placeholder{color:var(--ink-3)}
 .path{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
 .path button{background:none;border:none;padding:0;font-weight:600;color:var(--ink);cursor:pointer;font-size:13px}
 .path .arr{font-family:var(--f-mono);color:var(--ink-3);font-size:12px}
+.path .arr.off{color:var(--warn)}
+.unl{font-style:normal;font-size:11.5px;color:var(--warn);white-space:nowrap}
+.gcheck{display:grid;gap:6px;border-top:1px dashed var(--rule);padding-top:10px}
+.gc-h{margin:4px 0 0;font-family:var(--f-mono);font-size:11px;letter-spacing:.05em;color:var(--ink-3)}
+.gk{background:none;border:none;padding:0;font-weight:600;font-size:13px;color:var(--ink);cursor:pointer;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px}
+.gk:hover{text-decoration-color:var(--ink)}
+.vs{font-family:var(--f-mono);color:var(--ink-3)}
+.from{font-size:12px;color:var(--ink-3)}
+.dec{display:inline-block;font-size:11px;font-weight:600;padding:0 6px;border-radius:999px;border:1px solid var(--rule);color:var(--ink-2);margin-right:2px}
+.dec.open{border-color:var(--warn);color:var(--warn)}
 .md-fallback{min-height:140px;font:12px/1.5 var(--f-mono)}
 .ans-empty{display:grid;gap:10px;justify-items:start}
 .ans-empty p{margin:0;color:var(--ink-2);max-width:70ch}
@@ -1075,6 +1085,15 @@ const SAMPLE_REPORT = {
     { path:['gaming','annotation'], explain:'왜곡된 처리 기록이 AI 학습 데이터가 되면 같은 왜곡이 자동으로 재생산된다.' },
     { path:['hawthorne','novelty'], explain:'시범 기간의 관심 효과와 새 제도의 초기 효과가 겹쳤을 수 있다.' }
   ],
+  neighbors:[
+    { id:'cream', from:'gaming', verdict:'uncertain', reason:'처리하기 어려운 민원을 피해 받았는지는 기사에 정보가 없다. 민원 유형별 처리율과 이관·반려 건수를 확인해야 한다.' },
+    { id:'ratchet', from:'goodhart', verdict:'rejected', reason:'올해 처리율이 내년 목표의 기준이 된다는 언급이 없다.' },
+    { id:'coverage', from:'mode', verdict:'uncertain', reason:'문자로만 조사를 요청해 휴대전화 번호를 남기지 않은 민원인이 빠졌을 수 있다.' }
+  ],
+  disambig:[
+    { pick:'hawthorne', vs:'novelty', decision:'both', why:'시범 운영이라 감독을 받는다는 사실(호손)과 새 제도 도입 초기(신기성)가 겹친다. 시범 종료 뒤 추세가 없어 둘을 가를 수 없다.' },
+    { pick:'nonresponse', vs:'shyvoter', decision:'pick', why:'정치 성향처럼 숨길 이유가 있는 질문이 아니라 만족도 조사라서, 응답 내용을 꾸미기보다 응답 자체를 하지 않는 문제가 크다.' }
+  ],
   missing:['재접수 건수와 최초 접수일 기준의 실제 처리 기간','바뀌기 전 기준으로 다시 계산한 올해 처리율','만족도 조사 응답자 수와 미처리·포기 민원인 규모','시범 운영 종료 이후의 처리율 추세'],
   recs:['처리율을 최초 접수일 기준으로 다시 산출하고 재접수율을 함께 공개한다','만족도 조사를 미처리·포기 민원인까지 포함한 무작위 표본으로 다시 한다','처리율을 성과급에서 떼거나 해결 품질 지표와 묶는다','AI 학습 전에 게이밍이 의심되는 기록을 걸러 내고 출처를 표시한다']
 };
@@ -1101,6 +1120,63 @@ LK.forEach(l => {
 });
 N.forEach(n => { n.r = 6 + Math.sqrt(n.deg) * 2.1 + (n.core ? 1.5 : 0); n.rr = n.r; n.label = n.lb || n.ko; });
 $('#count').textContent = N.length + '개 효과 · ' + LK.length + '개 연결 · 7단계';
+
+/* ───────── 그래프 점검: 시각화와 무관하게 연결 구조로 계산한다 ───────── */
+const EMAP = new Map(LK.map(l => [ek(l.s, l.t), l]));
+/* 경로의 한 단계(a 다음 b)가 지도에 있는 연결인지, 있으면 어떤 방향인지 */
+function stepArrow(a, b){
+  const l = EMAP.get(ek(a, b));
+  if (!l) return { sym:'⇢', listed:false };
+  if (l.type === 'c') return { sym: l.s === a ? '→' : '←', listed:true };
+  if (l.type === 'v') return { sym: l.s === a ? '⊃' : '⊂', listed:true };
+  return { sym:'≈', listed:true };
+}
+function graphChecks(rep){
+  const rel = new Map();
+  [...rep.covers, ...rep.commits].forEach(e => rel.set(e.id, Math.max(rel.get(e.id) || 0, e.rel)));
+  const found = new Set(rel.keys());
+  /* Claude가 점검하고 넣지 않은 이웃 */
+  const neighbors = (rep.neighbors || []).filter(x => !found.has(x.id));
+  const checked = new Set(neighbors.map(x => x.id));
+  /* 혼동 쌍: 찾은 효과에 닿는 '유사·혼동' 연결 */
+  const dis = rep.disambig || [];
+  const findDis = (a, b) => dis.find(d => (d.pick === a && d.vs === b) || (d.pick === b && d.vs === a));
+  const used = new Set();
+  const pairs = LK.filter(l => l.type === 's' && (found.has(l.s) || found.has(l.t))).map(l => {
+    const both = found.has(l.s) && found.has(l.t);
+    const a = found.has(l.s) ? l.s : l.t, b = a === l.s ? l.t : l.s;
+    const d = findDis(l.s, l.t); if (d) used.add(d);
+    return { a: d ? d.pick : a, b: d ? d.vs : b, both, note: l.note, res: d || null, w: Math.max(rel.get(l.s) || 0, rel.get(l.t) || 0) };
+  }).sort((x, y) => y.w - x.w);
+  /* 판단이 있거나 둘 다 고른 쌍은 모두, 한쪽만 고르고 판단이 없는 쌍은 몇 개만 (Claude가 이미 따져 본 경우엔 더 적게) */
+  const settled = pairs.filter(c => c.res || c.both);
+  const open = pairs.filter(c => !c.res && !c.both && c.w >= 2).slice(0, dis.length ? 2 : 3);
+  const conf = [...settled, ...open].slice(0, 8);
+  dis.forEach(d => { if (!used.has(d) && conf.length < 10) conf.push({ a: d.pick, b: d.vs, both: found.has(d.pick) && found.has(d.vs), note:'', res: d, w: 0 }); });
+  const inConf = new Set(conf.flatMap(c => [c.a, c.b]));
+  /* 상위 개념으로 묶기: '하위 사례' 연결 */
+  const groups = new Map();
+  LK.forEach(l => { if (l.type === 'v' && found.has(l.t)) { if (!groups.has(l.s)) groups.set(l.s, []); groups.get(l.s).push(l.t); } });
+  const rollup = [...groups].map(([parent, kids]) => ({ parent, kids, self: found.has(parent) }))
+    .filter(g => g.kids.length + (g.self ? 1 : 0) >= 2).sort((a,b) => b.kids.length - a.kids.length).slice(0, 4);
+  /* 아직 점검하지 않은 인접 효과: 찾은 효과 둘 이상과 이어진 이웃 */
+  const cnt = new Map();
+  const inRollup = new Set(rollup.map(g => g.parent));
+  found.forEach(id => byId.get(id).adj.forEach(a => { if (!found.has(a.o) && !checked.has(a.o) && !inConf.has(a.o) && !inRollup.has(a.o)) cnt.set(a.o, (cnt.get(a.o) || 0) + 1); }));
+  const adjacent = [...cnt].filter(([,c]) => c >= 2).sort((a,b) => b[1] - a[1]).slice(0, 6).map(([id,c]) => ({ id, c }));
+  return { neighbors, conf, rollup, adjacent };
+}
+const DEC_LABEL = { pick:'고른 쪽만 해당', both:'둘 다 해당', unclear:'구분 불가' };
+function confText(c){
+  if (c.res) return { tag: DEC_LABEL[c.res.decision], open: c.res.decision === 'unclear', text: c.res.why };
+  if (c.both) return { tag:'중복 확인', open:true, text:'둘 다 골랐습니다. 같은 현상을 두 번 센 것은 아닌지 확인하세요.' + (c.note ? ' (' + c.note + ')' : '') };
+  return { tag:'확인 필요', open:true, text:'둘 중 어느 쪽인지 가를 근거가 있는지 확인하세요.' + (c.note ? ' (' + c.note + ')' : '') };
+}
+function chainSteps(path){
+  let unlisted = false;
+  const steps = path.map((id, i) => { if (i === 0) return { id }; const st = stepArrow(path[i - 1], id); if (!st.listed) unlisted = true; return { id, sym: st.sym, listed: st.listed }; });
+  return { steps, unlisted };
+}
 
 function relLabel(a){
   const t = a.l.type;
@@ -1640,7 +1716,13 @@ function normalizeReport(j, mode){
   const st = j.stages || j.stageNotes;
   if (st && typeof st === 'object') STAGES.forEach(s => { const v = str(st[s.id]); if (v) stageNotes[s.id] = v; });
   const dd = j.data && typeof j.data === 'object' ? { source: str(j.data.source), method: str(j.data.method), metric: str(j.data.metric), use: str(j.data.use) } : null;
+  const nseen = new Set();
+  const neighbors = (Array.isArray(j.neighbors) ? j.neighbors : []).filter(x => x && byId.has(x.id) && !nseen.has(x.id) && nseen.add(x.id)).slice(0, 10)
+    .map(x => ({ id: x.id, from: byId.has(x.from) ? x.from : '', verdict: x.verdict === 'rejected' ? 'rejected' : 'uncertain', reason: str(x.reason) }));
+  const disambig = (Array.isArray(j.disambig) ? j.disambig : []).filter(x => x && byId.has(x.pick) && byId.has(x.vs) && x.pick !== x.vs).slice(0, 10)
+    .map(x => ({ pick: x.pick, vs: x.vs, decision: ['pick','both','unclear'].includes(x.decision) ? x.decision : 'unclear', why: str(x.why) }));
   return {
+    neighbors, disambig,
     mode: mode || str(j.mode) || 'claude', title: str(j.title) || '제목 없는 글', url: str(j.url), source: str(j.source), kind: str(j.kind),
     createdAt: Number(j.createdAt) || Date.now(), summary: str(j.summary), data: dd,
     covers: normEffects(j.covers), commits: normEffects(j.commits), stageNotes, chains,
@@ -1701,7 +1783,6 @@ function buildLocal(text, url, fileName){
 
 /* ───────── 답변 렌더링 ───────── */
 function dots(r){ return `<span class="dots" title="관련도 ${r}/3">${'●'.repeat(r)}<span class="off">${'●'.repeat(3 - r)}</span></span>`; }
-const arrowFor = t => t === 'v' ? '⊃' : t === 's' ? '≈' : '→';
 const fmtDate = ms => { try { return ms ? new Date(ms).toLocaleString('ko-KR', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) : ''; } catch (e) { return ''; } };
 function itemHTML(e){
   const n = byId.get(e.id), s = STAGES[SI[n.st]];
@@ -1725,6 +1806,14 @@ function renderAnswer(){
   const dataHTML = d && (d.source || d.method || d.metric || d.use) ? `<ul class="plain">${[['데이터 출처',d.source],['수집 방법',d.method],['핵심 지표',d.metric],['수치의 쓰임',d.use]].filter(x => x[1]).map(x => `<li><b>${x[0]}</b>${esc(x[1])}</li>`).join('')}</ul>` : '';
   const safeUrl = /^https?:\/\//i.test(rep.url) ? rep.url : '';
   const canDelete = !!currentDocId && (isLocalId(currentDocId) || !!(db && (isOwner || canWrite === true)));
+  const gc = graphChecks(rep);
+  const gk = id => `<button type="button" class="gk" data-go="${id}">${esc(byId.get(id).ko)}</button>`;
+  const graphHTML = (gc.rollup.length || gc.conf.length || gc.neighbors.length || gc.adjacent.length) ? `<div class="gcheck"><p class="sub-h">그래프 점검</p>
+    ${gc.rollup.length ? `<p class="gc-h">상위 개념으로 묶으면</p><ul class="plain">${gc.rollup.map(g => `<li>${gk(g.parent)} 계열 ${g.kids.length + (g.self ? 1 : 0)}개: ${g.kids.map(gk).join(', ')}${g.self ? ' (상위 개념도 해당)' : ''}</li>`).join('')}</ul>` : ''}
+    ${gc.conf.length ? `<p class="gc-h">혼동 구분</p><ul class="plain">${gc.conf.map(c => { const t = confText(c); return `<li>${gk(c.a)} <span class="vs">≈</span> ${gk(c.b)} · <b class="dec${t.open ? ' open' : ''}">${esc(t.tag)}</b> ${esc(t.text)}</li>`; }).join('')}</ul>` : ''}
+    ${gc.neighbors.length ? `<p class="gc-h">Claude가 점검한 이웃</p><ul class="plain">${gc.neighbors.map(x => `<li>${gk(x.id)}${x.from ? ` <span class="from">${esc(byId.get(x.from).ko)}의 이웃</span>` : ''} · <b class="dec${x.verdict === 'uncertain' ? ' open' : ''}">${x.verdict === 'rejected' ? '해당 없음' : '판단 보류'}</b> ${esc(x.reason)}</li>`).join('')}</ul>` : ''}
+    ${gc.adjacent.length ? `<p class="gc-h">아직 점검하지 않은 인접 효과</p><ul class="plain">${gc.adjacent.map(a => `<li>${gk(a.id)} · 찾은 효과 ${a.c}개와 연결</li>`).join('')}</ul>` : ''}
+  </div>` : '';
   answerEl.innerHTML = `<div class="ans-head">
     <p class="kicker">답변 · ${esc(MODE_LABEL[rep.mode] || rep.mode)}${rep.kind ? ' · ' + esc(rep.kind) : ''}${rep.mode !== 'example' ? ' · ' + esc(fmtDate(rep.createdAt)) : ''}</p>
     <h2>${esc(rep.title)}</h2>
@@ -1751,8 +1840,8 @@ function renderAnswer(){
           ${!on ? `<p class="rs-q">점검: ${esc(s.q[0])}</p>` : ''}</li>`;
       }).join('')}</ol>
       ${dataHTML ? `<div><p class="sub-h">데이터 수집 개요</p>${dataHTML}</div>` : ''}
-      ${rep.chains.length ? `<div><p class="sub-h">연쇄 경로</p><ul class="chain-list">${rep.chains.map(c => `<li><span class="path">${c.path.map(id => `<button type="button" data-go="${id}">${esc(byId.get(id).ko)}</button>`).join(`<span class="arr">${arrowFor(c.type)}</span>`)}</span><span class="note">${esc(c.explain)}</span></li>`).join('')}</ul></div>` : ''}
-      ${rep.adjacent.length ? `<div><p class="sub-h">함께 점검할 인접 효과</p><ul class="plain">${rep.adjacent.map(a => `<li><button type="button" class="it-n" style="font-size:13px" data-go="${a.id}">${esc(byId.get(a.id).ko)}</button> · 찾은 효과 ${a.c}개와 연결</li>`).join('')}</ul></div>` : ''}
+      ${rep.chains.length ? `<div><p class="sub-h">연쇄 경로</p><ul class="chain-list">${rep.chains.map(c => { const cs = chainSteps(c.path); return `<li><span class="path">${cs.steps.map(s => (s.sym ? `<span class="arr${s.listed ? '' : ' off'}"${s.listed ? '' : ' title="지도에 없는 연결"'}>${s.sym}</span>` : '') + `<button type="button" data-go="${s.id}">${esc(byId.get(s.id).ko)}</button>`).join('')}</span><span class="note">${esc(c.explain)}${cs.unlisted ? ' <em class="unl">지도에 없는 연결 포함</em>' : ''}</span></li>`; }).join('')}</ul></div>` : ''}
+      ${graphHTML}
       ${rep.recs.length ? `<div><p class="sub-h">대응 권고</p><ul class="plain">${rep.recs.map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>` : ''}
       ${rep.missing.length ? `<div><p class="sub-h">추가 확인이 필요한 정보</p><ul class="plain">${rep.missing.map(r => `<li>${esc(r)}</li>`).join('')}</ul></div>` : ''}
     </div>
@@ -1788,11 +1877,18 @@ function toMarkdown(rep){
     L.push('');
   });
   L.push('## 5. 연쇄 경로', '');
-  if (rep.chains.length) rep.chains.forEach(c => L.push(`- ${c.path.map(id => byId.get(id).ko).join(' ' + arrowFor(c.type) + ' ')}: ${c.explain}`));
+  if (rep.chains.length) rep.chains.forEach(c => { const cs = chainSteps(c.path); L.push(`- ${cs.steps.map(s => (s.sym ? ' ' + s.sym + ' ' : '') + byId.get(s.id).ko).join('')}: ${c.explain}${cs.unlisted ? ' (지도에 없는 연결 포함)' : ''}`); });
   else L.push('- 찾은 효과 사이의 직접 연결 없음');
-  L.push('', '## 6. 대응 권고', '');
+  const gc = graphChecks(rep), ko = id => byId.get(id).ko;
+  L.push('', '## 6. 그래프 점검', '');
+  if (gc.rollup.length) { L.push('상위 개념으로 묶으면:'); gc.rollup.forEach(g => L.push(`- ${ko(g.parent)} 계열 ${g.kids.length + (g.self ? 1 : 0)}개: ${g.kids.map(ko).join(', ')}${g.self ? ' (상위 개념도 해당)' : ''}`)); L.push(''); }
+  if (gc.conf.length) { L.push('혼동 구분:'); gc.conf.forEach(c => { const t = confText(c); L.push(`- ${ko(c.a)} ≈ ${ko(c.b)}: [${t.tag}] ${t.text}`); }); L.push(''); }
+  if (gc.neighbors.length) { L.push('Claude가 점검한 이웃:'); gc.neighbors.forEach(x => L.push(`- ${ko(x.id)}${x.from ? ' (' + ko(x.from) + '의 이웃)' : ''}: [${x.verdict === 'rejected' ? '해당 없음' : '판단 보류'}] ${x.reason}`)); L.push(''); }
+  if (gc.adjacent.length) { L.push('아직 점검하지 않은 인접 효과:'); gc.adjacent.forEach(a => L.push(`- ${ko(a.id)}: 찾은 효과 ${a.c}개와 연결. ${byId.get(a.id).q}`)); L.push(''); }
+  if (!gc.rollup.length && !gc.conf.length && !gc.neighbors.length && !gc.adjacent.length) L.push('- 해당 없음', '');
+  L.push('## 7. 대응 권고', '');
   (rep.recs.length ? rep.recs : ['(작성 필요)']).forEach(r => L.push('- ' + r));
-  L.push('', '## 7. 추가 확인이 필요한 정보', '');
+  L.push('', '## 8. 추가 확인이 필요한 정보', '');
   (rep.missing.length ? rep.missing : ['(없음)']).forEach(r => L.push('- ' + r));
   return L.join('\n');
 }
@@ -2127,8 +2223,10 @@ async function fetchViaBrowser(url){
 }
 
 /* ───────── Claude 분석 ───────── */
+const EDGE_SYM = { c:'>', v:'⊃', s:'~' };
 function buildPrompt(text, url, fileName){
   const cat = N.map(n => `${n.id} | ${n.ko} | ${n.st} | ${n.d.split('. ')[0]}`).join('\n');
+  const links = LK.map(l => `${l.s} ${EDGE_SYM[l.type]} ${l.t} | ${l.note}`).join('\n');
   return `너는 데이터 수집 과정의 인위성(측정·관찰·지표화가 데이터나 현실을 바꾸는 현상)을 검토하는 분석가다.
 아래 [효과 목록]을 기준으로 [글]을 검토하고, 두 가지를 구분해라.
 - covers: 이 글이 다루는 오류. 글이 설명하거나 지적·비판하는 현상이다. 이름을 쓰지 않아도 글이 그 현상을 문제로 다루면 포함한다.
@@ -2144,13 +2242,23 @@ function buildPrompt(text, url, fileName){
 - chains는 효과가 이어지는 경로 0~4개, 각 path는 id 2~4개.
 - 모든 값은 한국어 문장으로 쓰고, 글에 없는 사실을 지어내지 않는다.
 
+[연결] 활용 규칙
+- [연결]의 기호: A > B는 A가 B로 이어진다(A가 원인), A ⊃ B는 B가 A의 하위 사례, A ~ B는 서로 비슷해 혼동되기 쉽다.
+- 효과를 고른 뒤, 고른 효과마다 [연결]에서 이웃을 확인한다. 글에 해당하는 이웃은 covers나 commits에 추가한다.
+- 확인했지만 넣지 않은 주요 이웃은 neighbors에 적는다(최대 8개). verdict는 "rejected"(글에 해당하지 않음) 또는 "uncertain"(글만으로는 판단할 수 없음)이고, reason에는 판단 근거나 확인해야 할 정보를 쓴다. from은 그 이웃에 닿게 한 고른 효과의 id다.
+- 고른 효과가 ~ 연결로 다른 효과와 이어져 있으면 disambig에 어느 쪽인지 구분한 근거를 적는다(최대 6개). pick은 고른 효과, vs는 혼동되는 효과, decision은 "pick"(고른 쪽만 해당), "both"(둘 다 해당), "unclear"(글만으로는 구분할 수 없음)다. 둘 다 골랐다면 같은 현상을 두 번 센 것은 아닌지도 따진다.
+- chains의 path는 [연결]에 있는 연결만 따라간다. 연결이 없는 단계가 꼭 필요하면 explain에 그 이유를 밝힌다.
+
 단계 키: design=지표 설계, capture=포착·표본, observe=관찰·측정, report=응답·보고, process=처리·분석, interpret=해석·결정, feedback=피드백·게이밍
 
 출력: 아래 형태의 JSON 객체 하나만.
-{"title":"글 제목(원제가 있으면 원제)","source":"매체·저자·기관(알 수 있으면)","kind":"기사|논문|보고서|기타","summary":"글이 다루는 데이터와 핵심 주장 2~3문장","data":{"source":"데이터를 만든 주체","method":"수집 방법","metric":"핵심 지표","use":"그 수치가 쓰이는 곳"},"covers":[{"id":"goodhart","rel":3,"evidence":"...","note":"..."}],"commits":[{"id":"nonresponse","rel":2,"evidence":"...","note":"..."}],"stages":{"design":"","capture":"","observe":"","report":"","process":"","interpret":"","feedback":""},"chains":[{"path":["mcnamara","goodhart","gaming"],"explain":"..."}],"missing":["글에 없어 확인해야 할 정보"],"recs":["보고서에 넣을 대응·개선 권고"]}
+{"title":"글 제목(원제가 있으면 원제)","source":"매체·저자·기관(알 수 있으면)","kind":"기사|논문|보고서|기타","summary":"글이 다루는 데이터와 핵심 주장 2~3문장","data":{"source":"데이터를 만든 주체","method":"수집 방법","metric":"핵심 지표","use":"그 수치가 쓰이는 곳"},"covers":[{"id":"goodhart","rel":3,"evidence":"...","note":"..."}],"commits":[{"id":"nonresponse","rel":2,"evidence":"...","note":"..."}],"stages":{"design":"","capture":"","observe":"","report":"","process":"","interpret":"","feedback":""},"chains":[{"path":["mcnamara","goodhart","gaming"],"explain":"..."}],"neighbors":[{"id":"cream","from":"gaming","verdict":"uncertain","reason":"..."}],"disambig":[{"pick":"hawthorne","vs":"novelty","decision":"both","why":"..."}],"missing":["글에 없어 확인해야 할 정보"],"recs":["보고서에 넣을 대응·개선 권고"]}
 
 [효과 목록] (id | 이름 | 단계 | 요지)
 ${cat}
+
+[연결] (A 기호 B | 관계 설명)
+${links}
 
 [글]${url ? '\n출처 링크: ' + url : ''}${fileName ? '\n파일 이름: ' + fileName : ''}
 """
